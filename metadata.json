@@ -1,0 +1,6 @@
+{
+  "name": "Connectome Web Viewer",
+  "description": "Interactive neuroimaging viewer for volumetric NIfTI cross-sections, 3D cortical surfaces, and CIFTI parcellations with bi-directional surface-to-slice crosshair mapping.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
