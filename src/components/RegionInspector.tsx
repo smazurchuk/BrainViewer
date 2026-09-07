@@ -170,34 +170,39 @@ export const RegionInspector: React.FC<RegionInspectorProps> = ({
         </div>
 
         {crosshair.activeLabel ? (
-          <div className="bg-[#18181B] border border-[#27272A] rounded p-2.5 space-y-2">
-            <div className="flex items-center gap-2">
-              <div
-                className="w-3.5 h-3.5 rounded-full shrink-0 border border-white/20"
-                style={{
-                  backgroundColor: `rgb(${Math.round(crosshair.activeLabel.color[0] * 255)}, ${Math.round(
-                    crosshair.activeLabel.color[1] * 255
-                  )}, ${Math.round(crosshair.activeLabel.color[2] * 255)})`
-                }}
-              />
-              <div className="min-w-0">
-                <div className="font-bold text-[#FAFAFA] text-xs truncate">
-                  {crosshair.activeLabel.name}
-                </div>
-                {crosshair.activeLabel.network && (
-                  <div className="text-[10px] text-[#38BDF8] font-medium">
-                    Network: {crosshair.activeLabel.network}
+          (() => {
+            const labelColor = crosshair.activeLabel.color || [0.6, 0.6, 0.6];
+            return (
+              <div className="bg-[#18181B] border border-[#27272A] rounded p-2.5 space-y-2">
+                <div className="flex items-center gap-2">
+                  <div
+                    className="w-3.5 h-3.5 rounded-full shrink-0 border border-white/20"
+                    style={{
+                      backgroundColor: `rgb(${Math.round(labelColor[0] * 255)}, ${Math.round(
+                        labelColor[1] * 255
+                      )}, ${Math.round(labelColor[2] * 255)})`
+                    }}
+                  />
+                  <div className="min-w-0">
+                    <div className="font-bold text-[#FAFAFA] text-xs truncate">
+                      {crosshair.activeLabel.name}
+                    </div>
+                    {crosshair.activeLabel.network && (
+                      <div className="text-[10px] text-[#38BDF8] font-medium">
+                        Network: {crosshair.activeLabel.network}
+                      </div>
+                    )}
                   </div>
+                </div>
+
+                {crosshair.activeLabel.description && (
+                  <p className="text-[11px] text-[#A1A1AA] leading-relaxed bg-black/40 p-2 rounded border border-[#27272A]">
+                    {crosshair.activeLabel.description}
+                  </p>
                 )}
               </div>
-            </div>
-
-            {crosshair.activeLabel.description && (
-              <p className="text-[11px] text-[#A1A1AA] leading-relaxed bg-black/40 p-2 rounded border border-[#27272A]">
-                {crosshair.activeLabel.description}
-              </p>
-            )}
-          </div>
+            );
+          })()
         ) : (
           <div className="bg-[#18181B] border border-[#27272A] rounded p-3 text-center text-[#71717A] text-[11px]">
             Click on cortical surface or cross-section near the surface to inspect area.

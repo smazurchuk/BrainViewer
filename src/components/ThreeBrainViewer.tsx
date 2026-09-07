@@ -248,7 +248,7 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
       if (w === 0 || h === 0) return;
       cameraRef.current.aspect = w / h;
       cameraRef.current.updateProjectionMatrix();
-      rendererRef.current.setSize(w, h);
+      rendererRef.current.setSize(w, h, false);
     };
 
     const resizeObserver = new ResizeObserver(handleResize);
@@ -262,7 +262,7 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
     };
   }, []);
 
-  // Build / Update Left Surface Mesh
+  // Build / Update Left Surface Mesh (only when surface geometry changes)
   useEffect(() => {
     if (!sceneRef.current || !leftSurface) return;
 
@@ -296,9 +296,9 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
     leftMeshRef.current = mesh;
 
     updateVertexColors(mesh, leftSurface, 'left');
-  }, [leftSurface, hemiVisibility, opacity, wireframe, updateVertexColors]);
+  }, [leftSurface]);
 
-  // Build / Update Right Surface Mesh
+  // Build / Update Right Surface Mesh (only when surface geometry changes)
   useEffect(() => {
     if (!sceneRef.current || !rightSurface) return;
 
@@ -332,7 +332,35 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
     rightMeshRef.current = mesh;
 
     updateVertexColors(mesh, rightSurface, 'right');
-  }, [rightSurface, hemiVisibility, opacity, wireframe, updateVertexColors]);
+  }, [rightSurface]);
+
+  // Update material styling (wireframe, opacity) in-place without rebuilding geometry
+  useEffect(() => {
+    if (leftMeshRef.current) {
+      const mat = leftMeshRef.current.material as THREE.MeshStandardMaterial;
+      mat.wireframe = wireframe;
+      mat.transparent = opacity < 0.99;
+      mat.opacity = opacity;
+      mat.needsUpdate = true;
+    }
+    if (rightMeshRef.current) {
+      const mat = rightMeshRef.current.material as THREE.MeshStandardMaterial;
+      mat.wireframe = wireframe;
+      mat.transparent = opacity < 0.99;
+      mat.opacity = opacity;
+      mat.needsUpdate = true;
+    }
+  }, [wireframe, opacity]);
+
+  // Update hemisphere visibility in-place without rebuilding geometry
+  useEffect(() => {
+    if (leftMeshRef.current) {
+      leftMeshRef.current.visible = hemiVisibility === 'both' || hemiVisibility === 'left';
+    }
+    if (rightMeshRef.current) {
+      rightMeshRef.current.visible = hemiVisibility === 'both' || hemiVisibility === 'right';
+    }
+  }, [hemiVisibility]);
 
   // Update vertex colors whenever parcellation or colorMode changes
   useEffect(() => {
@@ -646,14 +674,16 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
       </div>
 
       {/* Main 3D Canvas */}
-      <canvas
-        ref={canvasRef}
-        id="canvas-brain-3d"
-        className="w-full h-full cursor-grab active:cursor-grabbing block"
-        onPointerDown={handlePointerDown}
-        onPointerUp={handlePointerUp}
-        onDoubleClick={handleDoubleClick}
-      />
+      <div className="relative flex-1 w-full h-full min-w-0 min-h-0 overflow-hidden">
+        <canvas
+          ref={canvasRef}
+          id="canvas-brain-3d"
+          className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing block"
+          onPointerDown={handlePointerDown}
+          onPointerUp={handlePointerUp}
+          onDoubleClick={handleDoubleClick}
+        />
+      </div>
 
       {/* Hover Info Banner */}
       {hoveredInfo && (

@@ -1,16 +1,39 @@
 import { inflate } from 'pako';
 import { SurfaceMesh } from './types';
 
-// Convert base64 string to Uint8Array
+// Lookup table for fast base64 decoding directly into Uint8Array without intermediate strings or atob DOMException
+const B64_LOOKUP = new Uint8Array(256);
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+for (let i = 0; i < B64_CHARS.length; i++) {
+  B64_LOOKUP[B64_CHARS.charCodeAt(i)] = i;
+}
+
+// Convert base64 string to Uint8Array directly
 function base64ToUint8Array(base64: string): Uint8Array {
-  // Remove any whitespace or newlines
-  const clean = base64.replace(/\s+/g, '');
-  const binaryString = atob(clean);
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
+  // Remove whitespace, linebreaks, tabs
+  const clean = base64.replace(/[\s\r\n\t]/g, '');
+  const len = clean.length;
+  if (len === 0) return new Uint8Array(0);
+
+  let validLen = len;
+  if (clean[len - 1] === '=') validLen--;
+  if (len > 1 && clean[len - 2] === '=') validLen--;
+
+  const outLen = Math.floor((validLen * 3) / 4);
+  const bytes = new Uint8Array(outLen);
+  let p = 0;
+
+  for (let i = 0; i < len; i += 4) {
+    const b0 = B64_LOOKUP[clean.charCodeAt(i)];
+    const b1 = B64_LOOKUP[clean.charCodeAt(i + 1)];
+    const b2 = B64_LOOKUP[clean.charCodeAt(i + 2)];
+    const b3 = B64_LOOKUP[clean.charCodeAt(i + 3)];
+
+    bytes[p++] = (b0 << 2) | (b1 >> 4);
+    if (p < outLen) bytes[p++] = ((b1 & 15) << 4) | (b2 >> 2);
+    if (p < outLen) bytes[p++] = ((b2 & 3) << 6) | b3;
   }
+
   return bytes;
 }
 

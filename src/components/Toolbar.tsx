@@ -11,7 +11,7 @@ import {
   Layers,
   Sparkles
 } from 'lucide-react';
-import { ViewLayout } from '../neuro/types';
+import { ViewLayout, DisplayConvention } from '../neuro/types';
 
 interface ToolbarProps {
   layout: ViewLayout;
@@ -23,6 +23,8 @@ interface ToolbarProps {
   onColorModeChange: (mode: 'parcellation' | 'curvature' | 'solid') => void;
   snapToSurface: boolean;
   onToggleSnapToSurface: () => void;
+  displayConvention?: DisplayConvention;
+  onToggleDisplayConvention?: () => void;
   onOpenFileManager: () => void;
   onOpenHelp: () => void;
   hasCustomFiles: boolean;
@@ -44,6 +46,8 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   onColorModeChange,
   snapToSurface,
   onToggleSnapToSurface,
+  displayConvention = 'radiological',
+  onToggleDisplayConvention,
   onOpenFileManager,
   onOpenHelp,
   hasCustomFiles,
@@ -130,6 +134,24 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           <Crosshair className="w-3.5 h-3.5" />
           <span className="hidden sm:inline uppercase text-[10px] tracking-wider font-semibold">Surface Snap</span>
         </button>
+
+        {/* Radiological / Neurological Convention toggle */}
+        {onToggleDisplayConvention && (
+          <button
+            type="button"
+            onClick={onToggleDisplayConvention}
+            title={
+              displayConvention === 'radiological'
+                ? 'Radiological View: Screen Left is Patient Right (R), Screen Right is Patient Left (L). Click to switch to Neurological.'
+                : 'Neurological View: Screen Left is Patient Left (L), Screen Right is Patient Right (R). Click to switch to Radiological.'
+            }
+            className="flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium border bg-[#18181B] border-[#27272A] text-[#FAFAFA] hover:border-[#38BDF8]/60 transition-colors"
+          >
+            <span className="text-[10px] font-bold text-[#38BDF8] tracking-wider font-mono">
+              {displayConvention === 'radiological' ? 'RAD (R-L)' : 'NEURO (L-R)'}
+            </span>
+          </button>
+        )}
       </div>
 
       {/* Right Controls: Files, Layout & System Badge */}

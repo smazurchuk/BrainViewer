@@ -8,14 +8,7 @@ import {
   ViewLayout,
   ViewerOverlaySettings
 } from './neuro/types';
-import {
-  CANONICAL_LEFT_SURF,
-  CANONICAL_RIGHT_SURF,
-  createGlasserParcellation,
-  createBrodmannParcellation,
-  createYeoNetworksParcellation,
-  createCanonicalMniVolume
-} from './neuro/canonicalData';
+import { findNearestSurfaceVertex } from './neuro/surfaceUtils';
 import {
   loadAllUploadedHcpDatasets,
   fetchAndParseLeftSurface,
@@ -25,7 +18,8 @@ import {
   fetchAndParseBrodmannParc,
   fetchAndParseRsnParc,
   UploadedDatasetProgress,
-  UPLOADED_FILES_MANIFEST
+  UPLOADED_FILES_MANIFEST,
+  LoadedHcpBundle
 } from './neuro/datasetLoader';
 import { Toolbar } from './components/Toolbar';
 import { ThreeBrainViewer } from './components/ThreeBrainViewer';
@@ -34,21 +28,14 @@ import { OverlayContextMenu, ContextMenuTarget } from './components/OverlayConte
 import { RegionInspector } from './components/RegionInspector';
 import { FileLoaderModal } from './components/FileLoaderModal';
 import { HelpModal } from './components/HelpModal';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 export default function App() {
-  // 1. Neuroimaging Datasets State (initialized with authentic canonical reference)
-  const [leftSurface, setLeftSurface] = useState<SurfaceMesh>(CANONICAL_LEFT_SURF);
-  const [rightSurface, setRightSurface] = useState<SurfaceMesh>(CANONICAL_RIGHT_SURF);
-  const [volume, setVolume] = useState<VolumeData>(() => createCanonicalMniVolume());
-
-  // Parcellation collection
-  const defaultParcellations = useMemo(() => {
-    return {
-      glasser_hcp_mmp: createGlasserParcellation(leftSurface, rightSurface),
-      brodmann_atlas: createBrodmannParcellation(leftSurface, rightSurface),
-      yeo_rsn_networks: createYeoNetworksParcellation(leftSurface, rightSurface)
-    };
-  }, [leftSurface, rightSurface]);
+  // 1. Neuroimaging Datasets State — start with null to avoid memory doubling
+  // Real HCP data is auto-loaded on mount (see useEffect below)
+  const [leftSurface, setLeftSurface] = useState<SurfaceMesh | null>(null);
+  const [rightSurface, setRightSurface] = useState<SurfaceMesh | null>(null);
+  const [volume, setVolume] = useState<VolumeData | null>(null);
 
   const [loadedParcellations, setLoadedParcellations] = useState<Record<string, Parcellation>>({});
   const [activeParcId, setActiveParcId] = useState<string>('glasser_hcp_mmp');
@@ -58,11 +45,8 @@ export default function App() {
 
   // Combined Parcellation Dictionary
   const allParcellations = useMemo(() => {
-    return {
-      ...defaultParcellations,
-      ...loadedParcellations
-    };
-  }, [defaultParcellations, loadedParcellations]);
+    return { ...loadedParcellations };
+  }, [loadedParcellations]);
 
   // Dynamic parcellation options for toolbar
   const parcellationOptions = useMemo(() => {
@@ -78,8 +62,8 @@ export default function App() {
 
   // Active parcellation object
   const currentParcellation = useMemo(() => {
-    return (allParcellations as any)[activeParcId] || defaultParcellations.glasser_hcp_mmp;
-  }, [allParcellations, activeParcId, defaultParcellations]);
+    return (allParcellations as any)[activeParcId] || null;
+  }, [allParcellations, activeParcId]);
 
   // Track if custom files are active
   const [isCustomLeftSurf, setIsCustomLeftSurf] = useState(false);
@@ -92,18 +76,10 @@ export default function App() {
   const [datasetProgress, setDatasetProgress] = useState<UploadedDatasetProgress | null>(null);
 
   // 2. Crosshair & Bi-Directional Synchronization State
-  // Initialized at Motor Hand Knob (M1: X: -38, Y: -22, Z: 56)
-  const [crosshair, setCrosshair] = useState<CrosshairState>(() => {
-    const initialCoord: WorldCoord = { x: -38, y: -22, z: 56 };
-    const parc = defaultParcellations.glasser_hcp_mmp;
-    return {
-      mni: initialCoord,
-      nearestSurfacePoint: initialCoord,
-      nearestVertexIndex: 0,
-      nearestHemi: 'left',
-      activeLabel: parc.labels.get(1),
-      sourceView: 'manual'
-    };
+  // Initialized at origin — will be updated once real data loads
+  const [crosshair, setCrosshair] = useState<CrosshairState>({
+    mni: { x: 0, y: 0, z: 0 },
+    sourceView: 'manual'
   });
 
   // Synchronized Overlay Options State across all cross-section views
@@ -115,7 +91,8 @@ export default function App() {
     windowWidth: 100,
     windowLevel: 50,
     fitMode: 'fit',
-    zoomLevel: 1.0
+    zoomLevel: 1.0,
+    displayConvention: 'radiological'
   });
 
   // Right-Click Context Menu State
@@ -145,6 +122,9 @@ export default function App() {
     }
   }, [volume]);
 
+  // Flag indicating whether initial data has been loaded
+  const isDataReady = !!(leftSurface && rightSurface && volume);
+
   // Right-click context menu trigger for cross-section views
   const handleSliceContextMenu = useCallback(
     (e: React.MouseEvent, plane: 'axial' | 'coronal' | 'sagittal', coord: WorldCoord) => {
@@ -160,59 +140,112 @@ export default function App() {
 
   // Recalculate crosshair vertex info when surfaces or active parcellation change
   const refreshCrosshairForSurfaces = useCallback(
-    (coord: WorldCoord, _surfaces: SurfaceMesh[], parc: Parcellation) => {
-      setCrosshair((prev) => ({
-        ...prev,
-        mni: coord
-      }));
+    (coord: WorldCoord, surfaces: SurfaceMesh[], parc?: Parcellation) => {
+      const nearest = findNearestSurfaceVertex(coord, surfaces);
+      if (nearest) {
+        const targetParc = parc || currentParcellation;
+        const vLabels =
+          nearest.hemi === 'left' ? targetParc?.vertexLabelsL : targetParc?.vertexLabelsR;
+        const labelKey = vLabels ? vLabels[nearest.vertexIndex] : undefined;
+        const activeLabel =
+          labelKey !== undefined ? targetParc?.labels.get(labelKey) : undefined;
+
+        setCrosshair({
+          mni: coord,
+          nearestSurfacePoint: nearest.nearestPoint,
+          surfaceDistance: nearest.distance,
+          nearestVertexIndex: nearest.vertexIndex,
+          nearestHemi: nearest.hemi,
+          activeLabel,
+          sourceView: 'manual'
+        });
+      } else {
+        setCrosshair((prev) => ({
+          ...prev,
+          mni: coord
+        }));
+      }
     },
-    []
+    [currentParcellation]
   );
 
-  // Auto-load uploaded HCP S1200 / MNI152 datasets by default on startup
+  // Automatically update active parcel label whenever the parcellation atlas is switched
   useEffect(() => {
-    let active = true;
+    if (crosshair.nearestVertexIndex !== undefined && crosshair.nearestHemi && currentParcellation) {
+      const vLabels =
+        crosshair.nearestHemi === 'left'
+          ? currentParcellation.vertexLabelsL
+          : currentParcellation.vertexLabelsR;
+      const labelKey = vLabels ? vLabels[crosshair.nearestVertexIndex] : undefined;
+      const activeLabel =
+        labelKey !== undefined ? currentParcellation.labels.get(labelKey) : undefined;
+      setCrosshair((prev) => ({
+        ...prev,
+        activeLabel
+      }));
+    }
+  }, [currentParcellation]);
+
+  // Auto-load uploaded HCP S1200 / MNI152 datasets by default on startup (run once)
+  const autoLoadStartedRef = React.useRef(false);
+  const isMountedRef = React.useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  // Consolidate dataset bundle application in one single batch
+  const applyLoadedHcpBundle = useCallback(
+    (data: LoadedHcpBundle, targetMni?: WorldCoord) => {
+      setLeftSurface(data.leftSurf);
+      setRightSurface(data.rightSurf);
+      setVolume(data.volume);
+      setLoadedParcellations({
+        [data.glasserParc.id]: data.glasserParc,
+        [data.brodmannParc.id]: data.brodmannParc,
+        [data.rsnParc.id]: data.rsnParc
+      });
+      setActiveParcId(data.glasserParc.id);
+      setActiveColorMode('parcellation');
+      setIsCustomLeftSurf(true);
+      setIsCustomRightSurf(true);
+      setIsCustomVolume(true);
+      setIsCustomParc(true);
+
+      const targetCoord = targetMni || { x: 0, y: 0, z: 0 };
+      refreshCrosshairForSurfaces(targetCoord, [data.leftSurf, data.rightSurf], data.glasserParc);
+    },
+    [refreshCrosshairForSurfaces]
+  );
+
+  useEffect(() => {
+    if (autoLoadStartedRef.current) return;
+    autoLoadStartedRef.current = true;
+
     const autoLoad = async () => {
       setIsDatasetLoading(true);
-      setDatasetProgress({ step: 'Loading uploaded HCP S1200 & MNI152 datasets...', percent: 15 });
+      setDatasetProgress({ step: 'Loading HCP S1200 & MNI152 datasets...', percent: 5 });
       try {
         const data = await loadAllUploadedHcpDatasets((p) => {
-          if (active) setDatasetProgress(p);
+          if (isMountedRef.current) setDatasetProgress(p);
         });
-        if (!active) return;
-        setLeftSurface(data.leftSurf);
-        setRightSurface(data.rightSurf);
-        setVolume(data.volume);
-        setLoadedParcellations((prev) => ({
-          ...prev,
-          ...data.parcellations
-        }));
-        setActiveParcId('glasser_hcp_mmp');
-        setActiveColorMode('parcellation');
-        setIsCustomLeftSurf(true);
-        setIsCustomRightSurf(true);
-        setIsCustomVolume(true);
-        setIsCustomParc(true);
-
-        refreshCrosshairForSurfaces(
-          { x: -38.5, y: -22.0, z: 56.5 },
-          [data.leftSurf, data.rightSurf],
-          data.parcellations.glasser_hcp_mmp
-        );
+        if (!isMountedRef.current) return;
+        applyLoadedHcpBundle(data);
       } catch (err) {
-        console.warn('Initial default load of uploaded files failed, using canonical backup:', err);
+        console.error('Auto-load of HCP datasets failed:', err);
       } finally {
-        if (active) {
+        if (isMountedRef.current) {
           setIsDatasetLoading(false);
           setDatasetProgress(null);
         }
       }
     };
+
     autoLoad();
-    return () => {
-      active = false;
-    };
-  }, [refreshCrosshairForSurfaces]);
+  }, [applyLoadedHcpBundle]);
 
   // Handler for loading ALL uploaded datasets manually
   const handleLoadAllUploadedDatasets = async () => {
@@ -220,22 +253,9 @@ export default function App() {
     setDatasetProgress({ step: 'Initializing dataset pipeline...', percent: 5 });
     try {
       const data = await loadAllUploadedHcpDatasets((p) => setDatasetProgress(p));
-      setLeftSurface(data.leftSurf);
-      setRightSurface(data.rightSurf);
-      setVolume(data.volume);
-      setLoadedParcellations((prev) => ({
-        ...prev,
-        ...data.parcellations
-      }));
-      setActiveParcId('glasser_hcp_mmp');
-      setActiveColorMode('parcellation');
-      setIsCustomLeftSurf(true);
-      setIsCustomRightSurf(true);
-      setIsCustomVolume(true);
-      setIsCustomParc(true);
-
-      // Re-anchor crosshair to motor hand knob on new high-res surface
-      refreshCrosshairForSurfaces(crosshair.mni, [data.leftSurf, data.rightSurf], data.parcellations.glasser_hcp_mmp);
+      applyLoadedHcpBundle(data, crosshair.mni);
+    } catch (err) {
+      console.error('Manual load of uploaded datasets failed:', err);
     } finally {
       setIsDatasetLoading(false);
       setDatasetProgress(null);
@@ -255,9 +275,12 @@ export default function App() {
         setRightSurface(surf);
         setIsCustomRightSurf(true);
       } else if (fileKey === 'volume') {
+        console.log('[App] starting fetchAndParseMniVolume...');
         const vol = await fetchAndParseMniVolume();
+        console.log('[App] setting volume in React state, dims:', vol.dims);
         setVolume(vol);
         setIsCustomVolume(true);
+        console.log('[App] setVolume done');
       } else if (fileKey === 'glasserParc') {
         const parc = await fetchAndParseGlasserParc();
         setLoadedParcellations((prev) => ({ ...prev, [parc.id]: parc }));
@@ -309,25 +332,66 @@ export default function App() {
   // Updates 3D crosshair position immediately with zero lag or screen flicker
   const handleSliceClicked = useCallback(
     (coord: WorldCoord, source: 'axial' | 'coronal' | 'sagittal') => {
+      if (snapToSurface) {
+        const nearest = findNearestSurfaceVertex(coord, activeSurfaces);
+        if (nearest) {
+          const vLabels =
+            nearest.hemi === 'left' ? currentParcellation?.vertexLabelsL : currentParcellation?.vertexLabelsR;
+          const labelKey = vLabels ? vLabels[nearest.vertexIndex] : undefined;
+          const activeLabel =
+            labelKey !== undefined ? currentParcellation?.labels.get(labelKey) : undefined;
+
+          setCrosshair({
+            mni: coord,
+            nearestSurfacePoint: nearest.nearestPoint,
+            surfaceDistance: nearest.distance,
+            nearestVertexIndex: nearest.vertexIndex,
+            nearestHemi: nearest.hemi,
+            activeLabel,
+            sourceView: source
+          });
+          return;
+        }
+      }
+
       setCrosshair((prev) => ({
         ...prev,
         mni: coord,
         sourceView: source
       }));
     },
-    []
+    [snapToSurface, activeSurfaces, currentParcellation]
   );
 
   // Jump to specific landmark or manual coordinate
   const handleJumpToCoord = useCallback(
     (coord: WorldCoord) => {
-      setCrosshair((prev) => ({
-        ...prev,
-        mni: coord,
-        sourceView: 'manual'
-      }));
+      const nearest = findNearestSurfaceVertex(coord, activeSurfaces);
+      if (nearest) {
+        const vLabels =
+          nearest.hemi === 'left' ? currentParcellation?.vertexLabelsL : currentParcellation?.vertexLabelsR;
+        const labelKey = vLabels ? vLabels[nearest.vertexIndex] : undefined;
+        const activeLabel =
+          labelKey !== undefined ? currentParcellation?.labels.get(labelKey) : undefined;
+
+        setCrosshair({
+          mni: coord,
+          nearestSurfacePoint: nearest.nearestPoint,
+          surfaceDistance: nearest.distance,
+          nearestVertexIndex: nearest.vertexIndex,
+          nearestHemi: nearest.hemi,
+          activeLabel,
+          sourceView: 'manual'
+        });
+      } else {
+        setCrosshair((prev) => ({
+          ...prev,
+          mni: coord,
+          sourceView: 'manual'
+        }));
+      }
     },
-    []
+    [activeSurfaces, currentParcellation]
   );
 
   // Custom File Loaded Handlers
@@ -354,15 +418,15 @@ export default function App() {
   };
 
   const handleResetDefaults = () => {
-    setLeftSurface(CANONICAL_LEFT_SURF);
-    setRightSurface(CANONICAL_RIGHT_SURF);
-    setVolume(createCanonicalMniVolume());
+    // Clear custom data and re-trigger auto-load of HCP reference data
     setLoadedParcellations({});
     setActiveParcId('glasser_hcp_mmp');
     setIsCustomLeftSurf(false);
     setIsCustomRightSurf(false);
     setIsCustomVolume(false);
     setIsCustomParc(false);
+    // Re-load the default HCP datasets
+    handleLoadAllUploadedDatasets();
   };
 
   return (
@@ -378,6 +442,16 @@ export default function App() {
         onColorModeChange={setActiveColorMode}
         snapToSurface={snapToSurface}
         onToggleSnapToSurface={() => setSnapToSurface(!snapToSurface)}
+        displayConvention={overlaySettings.displayConvention ?? 'radiological'}
+        onToggleDisplayConvention={() =>
+          setOverlaySettings((prev) => ({
+            ...prev,
+            displayConvention:
+              (prev.displayConvention ?? 'radiological') === 'radiological'
+                ? 'neurological'
+                : 'radiological'
+          }))
+        }
         onOpenFileManager={() => setFileModalOpen(true)}
         onOpenHelp={() => setHelpModalOpen(true)}
         hasCustomFiles={isCustomLeftSurf || isCustomRightSurf || isCustomVolume || isCustomParc}
@@ -385,98 +459,130 @@ export default function App() {
         isLoadingUploaded={isDatasetLoading}
       />
 
+      {/* Loading Overlay */}
+      {isDatasetLoading && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#09090B]/95 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-4 max-w-md px-6">
+            <div className="w-10 h-10 border-2 border-[#38BDF8] border-t-transparent rounded-full animate-spin" />
+            <div className="text-sm text-[#38BDF8] font-semibold tracking-wider uppercase">
+              {datasetProgress?.step || 'Loading HCP datasets...'}
+            </div>
+            {datasetProgress && (
+              <div className="w-64 h-1.5 bg-[#27272A] rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-[#38BDF8] to-[#818CF8] rounded-full transition-all duration-300"
+                  style={{ width: `${datasetProgress.percent}%` }}
+                />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Main Multi-Viewport Body */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left / Center Viewport Area based on selected Bento layout */}
-        <div className="flex-1 flex flex-col min-w-0 bg-[#000000] overflow-hidden">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-[#000000] overflow-hidden">
           {layout === 'quad' && (
-            <main className="flex-1 grid grid-cols-1 lg:grid-cols-2 grid-rows-2 p-1.5 gap-1.5 bg-[#000000] overflow-hidden">
+            <main className="flex-1 grid grid-cols-1 lg:grid-cols-2 grid-rows-2 p-1.5 gap-1.5 bg-[#000000] overflow-hidden min-w-0 min-h-0">
               {/* Sagittal Slice Bento Cell */}
-              <div className="bg-[#000000] border border-[#27272A] rounded-md relative overflow-hidden flex flex-col">
-                <CrossSectionViewer
-                  volume={volume}
-                  crosshair={crosshair.mni}
-                  surfaces={activeSurfaces}
-                  onSliceClicked={handleSliceClicked}
-                  activePlaneFocus="sagittal"
-                  overlaySettings={overlaySettings}
-                  onOverlaySettingsChange={setOverlaySettings}
-                  onContextMenu={handleSliceContextMenu}
-                />
+              <div className="bg-[#000000] border border-[#27272A] rounded-md relative overflow-hidden flex flex-col min-w-0 min-h-0">
+                <ErrorBoundary fallbackTitle="Sagittal Cross-Section Error">
+                  <CrossSectionViewer
+                    volume={volume}
+                    crosshair={crosshair.mni}
+                    surfaces={activeSurfaces}
+                    onSliceClicked={handleSliceClicked}
+                    activePlaneFocus="sagittal"
+                    overlaySettings={overlaySettings}
+                    onOverlaySettingsChange={setOverlaySettings}
+                    onContextMenu={handleSliceContextMenu}
+                  />
+                </ErrorBoundary>
               </div>
 
               {/* Coronal Slice Bento Cell */}
-              <div className="bg-[#000000] border border-[#27272A] rounded-md relative overflow-hidden flex flex-col">
-                <CrossSectionViewer
-                  volume={volume}
-                  crosshair={crosshair.mni}
-                  surfaces={activeSurfaces}
-                  onSliceClicked={handleSliceClicked}
-                  activePlaneFocus="coronal"
-                  overlaySettings={overlaySettings}
-                  onOverlaySettingsChange={setOverlaySettings}
-                  onContextMenu={handleSliceContextMenu}
-                />
+              <div className="bg-[#000000] border border-[#27272A] rounded-md relative overflow-hidden flex flex-col min-w-0 min-h-0">
+                <ErrorBoundary fallbackTitle="Coronal Cross-Section Error">
+                  <CrossSectionViewer
+                    volume={volume}
+                    crosshair={crosshair.mni}
+                    surfaces={activeSurfaces}
+                    onSliceClicked={handleSliceClicked}
+                    activePlaneFocus="coronal"
+                    overlaySettings={overlaySettings}
+                    onOverlaySettingsChange={setOverlaySettings}
+                    onContextMenu={handleSliceContextMenu}
+                  />
+                </ErrorBoundary>
               </div>
 
               {/* Axial Slice Bento Cell */}
-              <div className="bg-[#000000] border border-[#27272A] rounded-md relative overflow-hidden flex flex-col">
-                <CrossSectionViewer
-                  volume={volume}
-                  crosshair={crosshair.mni}
-                  surfaces={activeSurfaces}
-                  onSliceClicked={handleSliceClicked}
-                  activePlaneFocus="axial"
-                  overlaySettings={overlaySettings}
-                  onOverlaySettingsChange={setOverlaySettings}
-                  onContextMenu={handleSliceContextMenu}
-                />
+              <div className="bg-[#000000] border border-[#27272A] rounded-md relative overflow-hidden flex flex-col min-w-0 min-h-0">
+                <ErrorBoundary fallbackTitle="Axial Cross-Section Error">
+                  <CrossSectionViewer
+                    volume={volume}
+                    crosshair={crosshair.mni}
+                    surfaces={activeSurfaces}
+                    onSliceClicked={handleSliceClicked}
+                    activePlaneFocus="axial"
+                    overlaySettings={overlaySettings}
+                    onOverlaySettingsChange={setOverlaySettings}
+                    onContextMenu={handleSliceContextMenu}
+                  />
+                </ErrorBoundary>
               </div>
 
               {/* 3D Surface View Bento Cell */}
-              <div className="bg-[#09090B] border border-[#38BDF8]/40 rounded-md relative overflow-hidden flex flex-col shadow-lg shadow-[#38BDF8]/5">
-                <ThreeBrainViewer
-                  leftSurface={leftSurface}
-                  rightSurface={rightSurface}
-                  parcellation={currentParcellation}
-                  activeColorMode={activeColorMode}
-                  crosshair={crosshair}
-                  onSurfacePointClicked={handleSurfacePointClicked}
-                  showMarkerOnSurface={true}
-                />
+              <div className="bg-[#09090B] border border-[#38BDF8]/40 rounded-md relative overflow-hidden flex flex-col shadow-lg shadow-[#38BDF8]/5 min-w-0 min-h-0">
+                <ErrorBoundary fallbackTitle="3D Cortex Surface Error">
+                  <ThreeBrainViewer
+                    leftSurface={leftSurface}
+                    rightSurface={rightSurface}
+                    parcellation={currentParcellation}
+                    activeColorMode={activeColorMode}
+                    crosshair={crosshair}
+                    onSurfacePointClicked={handleSurfacePointClicked}
+                    showMarkerOnSurface={true}
+                  />
+                </ErrorBoundary>
               </div>
             </main>
           )}
 
           {layout === 'surface_focus' && (
-            <div className="flex-1 p-1.5 bg-[#000000] overflow-hidden">
-              <div className="w-full h-full bg-[#09090B] border border-[#38BDF8]/40 rounded-md overflow-hidden flex flex-col shadow-xl">
-                <ThreeBrainViewer
-                  leftSurface={leftSurface}
-                  rightSurface={rightSurface}
-                  parcellation={currentParcellation}
-                  activeColorMode={activeColorMode}
-                  crosshair={crosshair}
-                  onSurfacePointClicked={handleSurfacePointClicked}
-                  showMarkerOnSurface={true}
-                />
+            <div className="flex-1 p-1.5 bg-[#000000] overflow-hidden min-w-0 min-h-0">
+              <div className="w-full h-full bg-[#09090B] border border-[#38BDF8]/40 rounded-md overflow-hidden flex flex-col shadow-xl min-w-0 min-h-0">
+                <ErrorBoundary fallbackTitle="3D Cortex Surface Error">
+                  <ThreeBrainViewer
+                    leftSurface={leftSurface}
+                    rightSurface={rightSurface}
+                    parcellation={currentParcellation}
+                    activeColorMode={activeColorMode}
+                    crosshair={crosshair}
+                    onSurfacePointClicked={handleSurfacePointClicked}
+                    showMarkerOnSurface={true}
+                  />
+                </ErrorBoundary>
               </div>
             </div>
           )}
 
           {layout === 'slices_focus' && (
-            <div className="flex-1 p-1.5 bg-[#000000] overflow-hidden">
-              <div className="w-full h-full bg-[#000000] border border-[#27272A] rounded-md overflow-hidden flex flex-col">
-                <CrossSectionViewer
-                  volume={volume}
-                  crosshair={crosshair.mni}
-                  surfaces={activeSurfaces}
-                  onSliceClicked={handleSliceClicked}
-                  activePlaneFocus="all"
-                  overlaySettings={overlaySettings}
-                  onOverlaySettingsChange={setOverlaySettings}
-                  onContextMenu={handleSliceContextMenu}
-                />
+            <div className="flex-1 p-1.5 bg-[#000000] overflow-hidden min-w-0 min-h-0">
+              <div className="w-full h-full bg-[#000000] border border-[#27272A] rounded-md overflow-hidden flex flex-col min-w-0 min-h-0">
+                <ErrorBoundary fallbackTitle="Cross-Section Viewer Error">
+                  <CrossSectionViewer
+                    volume={volume}
+                    crosshair={crosshair.mni}
+                    surfaces={activeSurfaces}
+                    onSliceClicked={handleSliceClicked}
+                    activePlaneFocus="all"
+                    overlaySettings={overlaySettings}
+                    onOverlaySettingsChange={setOverlaySettings}
+                    onContextMenu={handleSliceContextMenu}
+                  />
+                </ErrorBoundary>
               </div>
             </div>
           )}
@@ -510,7 +616,7 @@ export default function App() {
           )}
         </div>
         <div className="text-[10px] text-[#71717A] font-mono uppercase tracking-tight shrink-0 hidden lg:block">
-          ATLAS: <span className="text-[#A1A1AA]">{currentParcellation?.name || 'Glasser HCP-MMP1.0'}</span>
+          ATLAS: <span className="text-[#A1A1AA]">{currentParcellation?.name || (isDataReady ? 'None' : 'Loading...')}</span>
         </div>
       </footer>
 

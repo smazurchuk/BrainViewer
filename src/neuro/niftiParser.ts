@@ -55,16 +55,16 @@ export function parseNiftiVolume(buffer: ArrayBuffer, fileName = 'volume.nii'): 
 
   const invAffine = invertMatrix4(affine);
 
-  // Convert raw image data to Float32Array
+  // Convert raw image data to typed array efficiently
   const totalVoxels = dims[0] * dims[1] * dims[2];
-  let data: Float32Array;
+  let data: Float32Array | Uint8Array | Int16Array;
 
   switch (header.datatypeCode) {
-    case 2: // DT_UINT8
-      data = new Float32Array(new Uint8Array(rawImage));
+    case 2: // DT_UINT8 (e.g. MNI152 T1w) - keep as Uint8Array to save 63MB of memory
+      data = new Uint8Array(rawImage);
       break;
     case 4: // DT_INT16
-      data = new Float32Array(new Int16Array(rawImage));
+      data = new Int16Array(rawImage);
       break;
     case 8: // DT_INT32
       data = new Float32Array(new Int32Array(rawImage));

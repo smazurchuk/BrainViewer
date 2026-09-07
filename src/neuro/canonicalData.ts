@@ -444,19 +444,19 @@ export function createYeoNetworksParcellation(leftSurf: SurfaceMesh, rightSurf: 
 }
 
 // Canonical MNI152 T1 Volume generator (1.5mm voxel resolution)
-// MNI coordinate space:
-// X: -90 to +90 (120 voxels, dx = 1.5mm)
+// MNI coordinate space conforming to radiological MNI152 standard:
+// X: +90 (Right) to -90 (Left) (120 voxels, dx = -1.5mm)
 // Y: -126 to +90 (144 voxels, dy = 1.5mm)
 // Z: -72 to +108 (120 voxels, dz = 1.5mm)
 export function createCanonicalMniVolume(): VolumeData {
   const nx = 120;
   const ny = 144;
   const nz = 120;
-  const dx = 1.5;
+  const dx = -1.5;
   const dy = 1.5;
   const dz = 1.5;
 
-  const originX = -90;
+  const originX = 90;
   const originY = -126;
   const originZ = -72;
 

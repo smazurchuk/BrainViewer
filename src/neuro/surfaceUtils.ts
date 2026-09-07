@@ -186,6 +186,12 @@ export function extractSliceContours(
     }
   }
 
+  // Prevent memory growth during continuous scrolling
+  if (cache.size > 80) {
+    const firstKey = cache.keys().next().value;
+    if (firstKey) cache.delete(firstKey);
+  }
+
   cache.set(key, segments);
   return segments;
 }
