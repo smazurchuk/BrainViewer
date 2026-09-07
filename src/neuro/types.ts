@@ -81,7 +81,6 @@ export type ColormapType = 'grayscale' | 'inverted' | 'hot' | 'bone' | 'jet' | '
 
 export type FitMode = 'fill' | 'fit' | 'brain_focus';
 
-export type DisplayConvention = 'radiological' | 'neurological';
 
 export interface ViewerOverlaySettings {
   showCrosshairs: boolean;
@@ -92,5 +91,4 @@ export interface ViewerOverlaySettings {
   windowLevel: number;
   fitMode: FitMode;
   zoomLevel: number;
-  displayConvention?: DisplayConvention;
 }

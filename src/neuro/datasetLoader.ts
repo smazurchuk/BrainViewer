@@ -1,6 +1,6 @@
 import { SurfaceMesh, VolumeData, Parcellation } from './types';
 import { parseGiftiSurface } from './giftiParser';
-import { parseNiftiVolume } from './niftiParser';
+import { parseNiftiVolume, parseNiftiVolumeAsync } from './niftiParser';
 import { parseCiftiFile } from './ciftiParser';
 
 export interface UploadedDatasetProgress {
@@ -176,42 +176,36 @@ export const UPLOADED_FILES_MANIFEST = {
     size: '644 KB'
   },
   rsnParc: {
-    path: getAssetUrl('data/RSN-networks.32k_fs_LR.dlabel.nii'),
-    filename: 'RSN-networks.32k_fs_LR.dlabel.nii',
-    title: 'RSN Resting State Networks (Yeo 7/17)',
-    size: '1.07 MB'
+    path: getAssetUrl('data/Yeo7_RSN.32k_fs_LR.dlabel.nii'),
+    filename: 'Yeo7_RSN.32k_fs_LR.dlabel.nii',
+    title: 'Yeo 2011 7 Resting-State Networks',
+    size: '260 KB'
   }
 };
 
 export async function fetchAndParseLeftSurface(): Promise<SurfaceMesh> {
   const filename = UPLOADED_FILES_MANIFEST.leftSurf.filename;
   const text = await fetchAssetText(filename);
-  await yieldToMainThread(15);
   return parseGiftiSurface(text, filename);
 }
 
 export async function fetchAndParseRightSurface(): Promise<SurfaceMesh> {
   const filename = UPLOADED_FILES_MANIFEST.rightSurf.filename;
   const text = await fetchAssetText(filename);
-  await yieldToMainThread(15);
   return parseGiftiSurface(text, filename);
 }
 
 export async function fetchAndParseMniVolume(): Promise<VolumeData> {
-  console.log('[datasetLoader] fetchAndParseMniVolume: fetching .nii.gz');
   const filename = UPLOADED_FILES_MANIFEST.volume.filename;
   const buffer = await fetchAssetBuffer(filename);
-  console.log('[datasetLoader] fetched gz buffer byteLength:', buffer.byteLength);
-  await yieldToMainThread(25);
-  const vol = parseNiftiVolume(buffer, filename);
-  console.log('[datasetLoader] parseNiftiVolume finished, dims:', vol.dims);
+  // Use Web Worker for off-main-thread decompression of the 12MB gzipped volume
+  const vol = await parseNiftiVolumeAsync(buffer, filename);
   return vol;
 }
 
 export async function fetchAndParseGlasserParc(): Promise<Parcellation> {
   const filename = UPLOADED_FILES_MANIFEST.glasserParc.filename;
   const buffer = await fetchAssetBuffer(filename);
-  await yieldToMainThread(15);
   const parc = parseCiftiFile(buffer, filename);
   return {
     ...parc,
@@ -223,7 +217,6 @@ export async function fetchAndParseGlasserParc(): Promise<Parcellation> {
 export async function fetchAndParseBrodmannParc(): Promise<Parcellation> {
   const filename = UPLOADED_FILES_MANIFEST.brodmannParc.filename;
   const buffer = await fetchAssetBuffer(filename);
-  await yieldToMainThread(15);
   const parc = parseCiftiFile(buffer, filename);
   return {
     ...parc,
@@ -235,12 +228,11 @@ export async function fetchAndParseBrodmannParc(): Promise<Parcellation> {
 export async function fetchAndParseRsnParc(): Promise<Parcellation> {
   const filename = UPLOADED_FILES_MANIFEST.rsnParc.filename;
   const buffer = await fetchAssetBuffer(filename);
-  await yieldToMainThread(15);
   const parc = parseCiftiFile(buffer, filename);
   return {
     ...parc,
     id: 'yeo_rsn_networks',
-    name: 'RSN Networks (Real CIFTI)'
+    name: 'Yeo 2011 7 Networks'
   };
 }
 
@@ -291,38 +283,53 @@ export async function loadAllUploadedHcpDatasets(
 
   activeLoadPromise = (async () => {
     try {
-      // Step 1: Left Pial Surface (1.8MB)
-      notifyProgress('Loading HCP Left Pial Surface (1.8MB)...', 10);
-      await yieldToMainThread(20);
-      const leftSurf = await fetchAndParseLeftSurface();
+      // Phase 1: Fetch ALL 6 files in parallel (I/O-bound — big win over sequential)
+      notifyProgress('Downloading 6 HCP datasets in parallel...', 10);
+      await yieldToMainThread(5);
 
-      // Step 2: Right Pial Surface (1.7MB)
-      notifyProgress('Loading HCP Right Pial Surface (1.7MB)...', 25);
-      await yieldToMainThread(20);
-      const rightSurf = await fetchAndParseRightSurface();
+      const [
+        leftSurfText,
+        rightSurfText,
+        volumeBuffer,
+        glasserBuffer,
+        brodmannBuffer,
+        rsnBuffer
+      ] = await Promise.all([
+        fetchAssetText(UPLOADED_FILES_MANIFEST.leftSurf.filename),
+        fetchAssetText(UPLOADED_FILES_MANIFEST.rightSurf.filename),
+        fetchAssetBuffer(UPLOADED_FILES_MANIFEST.volume.filename),
+        fetchAssetBuffer(UPLOADED_FILES_MANIFEST.glasserParc.filename),
+        fetchAssetBuffer(UPLOADED_FILES_MANIFEST.brodmannParc.filename),
+        fetchAssetBuffer(UPLOADED_FILES_MANIFEST.rsnParc.filename)
+      ]);
 
-      // Step 3: Glasser HCP-MMP1.0 CIFTI (621KB)
-      notifyProgress('Loading Glasser HCP-MMP1.0 CIFTI Parcellation...', 40);
-      await yieldToMainThread(20);
-      const glasser = await fetchAndParseGlasserParc();
+      // Phase 2: Parse all datasets. NIfTI goes to a Web Worker (heaviest job).
+      // Start the volume worker immediately so it runs concurrently with main-thread parsing.
+      notifyProgress('Parsing surfaces and parcellations...', 50);
+      await yieldToMainThread(5);
 
-      // Step 4: Brodmann BA09 CIFTI (644KB)
-      notifyProgress('Loading Brodmann BA09 CIFTI Parcellation...', 55);
-      await yieldToMainThread(20);
-      const brodmann = await fetchAndParseBrodmannParc();
+      const volumePromise = parseNiftiVolumeAsync(volumeBuffer, UPLOADED_FILES_MANIFEST.volume.filename);
 
-      // Step 5: RSN Networks CIFTI (1.07MB)
-      notifyProgress('Loading RSN Resting-State Networks CIFTI...', 70);
-      await yieldToMainThread(20);
-      const rsn = await fetchAndParseRsnParc();
+      // Parse surfaces and parcellations on main thread (these are fast)
+      const leftSurf = parseGiftiSurface(leftSurfText, UPLOADED_FILES_MANIFEST.leftSurf.filename);
+      const rightSurf = parseGiftiSurface(rightSurfText, UPLOADED_FILES_MANIFEST.rightSurf.filename);
 
-      // Step 6: MNI152 0.7mm T1w Volume (11.9MB)
-      notifyProgress('Loading MNI152 0.7mm T1w Volume (11.9MB)...', 85);
-      await yieldToMainThread(30);
-      const volume = await fetchAndParseMniVolume();
+      notifyProgress('Parsing CIFTI parcellations...', 70);
+
+      const glasserRaw = parseCiftiFile(glasserBuffer, UPLOADED_FILES_MANIFEST.glasserParc.filename);
+      const glasser = { ...glasserRaw, id: 'glasser_hcp_mmp', name: 'Glasser HCP-MMP1.0 (Real CIFTI)' };
+
+      const brodmannRaw = parseCiftiFile(brodmannBuffer, UPLOADED_FILES_MANIFEST.brodmannParc.filename);
+      const brodmann = { ...brodmannRaw, id: 'brodmann_atlas', name: 'Brodmann BA09 (Real CIFTI)' };
+
+      const rsnRaw = parseCiftiFile(rsnBuffer, UPLOADED_FILES_MANIFEST.rsnParc.filename);
+      const rsn = { ...rsnRaw, id: 'yeo_rsn_networks', name: 'Yeo 2011 7 Networks' };
+
+      // Wait for the volume worker to finish
+      notifyProgress('Decompressing MNI152 volume...', 85);
+      const volume = await volumePromise;
 
       notifyProgress('All 6 HCP Reference Datasets Synchronized!', 100);
-      await yieldToMainThread(25);
 
       cachedBundle = {
         leftSurf,

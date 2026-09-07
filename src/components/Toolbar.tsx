@@ -11,7 +11,7 @@ import {
   Layers,
   Sparkles
 } from 'lucide-react';
-import { ViewLayout, DisplayConvention } from '../neuro/types';
+import { ViewLayout } from '../neuro/types';
 
 interface ToolbarProps {
   layout: ViewLayout;
@@ -23,8 +23,7 @@ interface ToolbarProps {
   onColorModeChange: (mode: 'parcellation' | 'curvature' | 'solid') => void;
   snapToSurface: boolean;
   onToggleSnapToSurface: () => void;
-  displayConvention?: DisplayConvention;
-  onToggleDisplayConvention?: () => void;
+
   onOpenFileManager: () => void;
   onOpenHelp: () => void;
   hasCustomFiles: boolean;
@@ -40,14 +39,13 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   parcellationOptions = [
     { id: 'glasser_hcp_mmp', name: 'Glasser HCP-MMP1.0 (360 Areas)' },
     { id: 'brodmann_atlas', name: 'Brodmann BA09 (32k_fs_LR)' },
-    { id: 'yeo_rsn_networks', name: 'RSN-networks (Yeo 7/17)' }
+    { id: 'yeo_rsn_networks', name: 'Yeo 2011 7 Networks (RSN)' }
   ],
   activeColorMode,
   onColorModeChange,
   snapToSurface,
   onToggleSnapToSurface,
-  displayConvention = 'radiological',
-  onToggleDisplayConvention,
+
   onOpenFileManager,
   onOpenHelp,
   hasCustomFiles,
@@ -63,7 +61,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         </div>
         <div className="flex items-baseline gap-1.5">
           <span className="font-bold tracking-tight text-sm text-[#FAFAFA]">
-            CONNECTOME <span className="text-[#71717A] font-medium text-xs">WORKBENCH</span>
+            HCP <span className="text-[#71717A] font-medium text-xs">VIEWER</span>
           </span>
         </div>
       </div>
@@ -86,7 +84,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         )}
 
         <div className="flex items-center gap-2 bg-[#18181B] border border-[#27272A] rounded px-2.5 py-1 text-xs">
-          <span className="text-[10px] font-bold text-[#71717A] uppercase tracking-wider">Atlas:</span>
+          <span className="text-xs font-bold text-[#E4E4E7] uppercase tracking-wider">Surface Atlas:</span>
           <select
             value={activeColorMode === 'parcellation' ? selectedParcellationId : activeColorMode}
             onChange={(e) => {
@@ -135,23 +133,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           <span className="hidden sm:inline uppercase text-[10px] tracking-wider font-semibold">Surface Snap</span>
         </button>
 
-        {/* Radiological / Neurological Convention toggle */}
-        {onToggleDisplayConvention && (
-          <button
-            type="button"
-            onClick={onToggleDisplayConvention}
-            title={
-              displayConvention === 'radiological'
-                ? 'Radiological View: Screen Left is Patient Right (R), Screen Right is Patient Left (L). Click to switch to Neurological.'
-                : 'Neurological View: Screen Left is Patient Left (L), Screen Right is Patient Right (R). Click to switch to Radiological.'
-            }
-            className="flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium border bg-[#18181B] border-[#27272A] text-[#FAFAFA] hover:border-[#38BDF8]/60 transition-colors"
-          >
-            <span className="text-[10px] font-bold text-[#38BDF8] tracking-wider font-mono">
-              {displayConvention === 'radiological' ? 'RAD (R-L)' : 'NEURO (L-R)'}
-            </span>
-          </button>
-        )}
+
       </div>
 
       {/* Right Controls: Files, Layout & System Badge */}

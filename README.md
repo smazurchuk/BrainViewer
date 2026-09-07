@@ -1,20 +1,16 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
 
-# Run and deploy your AI Studio app
+# Brain Viewer
+
+This app is the brain viewer I have wanted. Created with the help of AI and modelled after the Connectomy Workbench Viewer
+
+The Key functionality is that if you double click on the 3D brain surface, the cross section jumps to that location. Similarly, if you double click on the surface in the cross section, it jumps to that location on the 3D brain surface. 
 
 This contains everything you need to run your app locally.
 
-View your app in AI Studio: https://ai.studio/apps/dcf3b054-3785-472f-8784-3f7b2f7e7d06
-
 ## Run Locally
-
 **Prerequisites:**  Node.js
-
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
+2. Run the app:
    `npm run dev`

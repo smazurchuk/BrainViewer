@@ -5,8 +5,7 @@ import {
   SurfaceMesh,
   ColormapType,
   ViewerOverlaySettings,
-  FiduciaryMarker,
-  DisplayConvention
+  FiduciaryMarker
 } from '../neuro/types';
 import { worldToVoxel, voxelToWorld } from '../neuro/matrixUtils';
 import { extractSliceContours, findNearestSliceContourHit } from '../neuro/surfaceUtils';
@@ -103,9 +102,8 @@ export interface OrthogonalSliceProps {
   colormap: ColormapType;
   windowWidth: number;
   windowLevel: number;
-  displayConvention?: DisplayConvention;
+
   updateSettings: (updater: (prev: ViewerOverlaySettings) => ViewerOverlaySettings) => void;
-  onContextMenu?: (e: React.MouseEvent, plane: 'axial' | 'coronal' | 'sagittal', coord: WorldCoord) => void;
 }
 
 export const OrthogonalSlice: React.FC<OrthogonalSliceProps> = ({
@@ -130,9 +128,8 @@ export const OrthogonalSlice: React.FC<OrthogonalSliceProps> = ({
   colormap,
   windowWidth,
   windowLevel,
-  displayConvention = 'radiological',
-  updateSettings,
-  onContextMenu
+
+  updateSettings
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -141,6 +138,10 @@ export const OrthogonalSlice: React.FC<OrthogonalSliceProps> = ({
   const [isMouseDown, setIsMouseDown] = useState<boolean>(false);
   const [localSettingsOpen, setLocalSettingsOpen] = useState<boolean>(false);
   const [feedbackToast, setFeedbackToast] = useState<{ text: string; type: 'success' | 'hint' } | null>(null);
+
+  // Right-click windowing (DICOM-style): track drag origin and accumulated delta
+  const rightDragRef = useRef<{ startX: number; startY: number; startWidth: number; startLevel: number } | null>(null);
+  const [windowingActive, setWindowingActive] = useState<boolean>(false);
 
   useEffect(() => {
     if (feedbackToast) {
@@ -168,7 +169,8 @@ export const OrthogonalSlice: React.FC<OrthogonalSliceProps> = ({
   const worldAtI0 = useMemo(() => voxelToWorld({ i: 0, j: curJ, k: curK }, volume.affine), [curJ, curK, volume.affine]);
   const worldAtIMax = useMemo(() => voxelToWorld({ i: nx - 1, j: curJ, k: curK }, volume.affine), [nx, curJ, curK, volume.affine]);
   const i0IsPatientRight = worldAtI0.x > worldAtIMax.x;
-  const isRadiological = displayConvention === 'radiological';
+  // Always use radiological convention (R-L)
+  const isRadiological = true;
   const flipX = (plane === 'axial' || plane === 'coronal') ? (isRadiological ? !i0IsPatientRight : i0IsPatientRight) : false;
 
   // Build high-speed 256-entry Uint32 LUT for colormap + windowing
@@ -500,6 +502,8 @@ export const OrthogonalSlice: React.FC<OrthogonalSliceProps> = ({
       setIsMouseDown(true);
       const worldPt = getVoxelAndWorldFromEvent(e);
       if (worldPt) onSliceClicked(worldPt, plane);
+    } else if (e.button === 2) {
+      handleMouseDownRight(e);
     }
   };
 
@@ -507,15 +511,54 @@ export const OrthogonalSlice: React.FC<OrthogonalSliceProps> = ({
     if (isMouseDown && e.buttons === 1) {
       const worldPt = getVoxelAndWorldFromEvent(e);
       if (worldPt) onSliceClicked(worldPt, plane);
+    } else if (e.buttons === 2 && rightDragRef.current) {
+      handleMouseMoveWindowing(e);
     }
   };
 
-  const handleMouseUp = () => setIsMouseDown(false);
+  const handleMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (e.button === 0) setIsMouseDown(false);
+    else if (e.button === 2) handleMouseUpRight(e);
+  };
 
+  // DICOM-style right-button windowing
   const handleContextMenu = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.preventDefault(); // Suppress browser menu; drag is handled via mousedown/mousemove
+  };
+
+  const handleMouseDownRight = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (e.button !== 2) return;
     e.preventDefault();
-    const worldPt = getVoxelAndWorldFromEvent(e);
-    if (worldPt && onContextMenu) onContextMenu(e, plane, worldPt);
+    rightDragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      startWidth: windowWidth,
+      startLevel: windowLevel
+    };
+    setWindowingActive(true);
+  };
+
+  const handleMouseMoveWindowing = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!rightDragRef.current) return;
+    const { startX, startY, startWidth, startLevel } = rightDragRef.current;
+    // Standard DICOM viewer convention:
+    // Horizontal drag → Window Width (contrast): right increases, left decreases
+    // Vertical drag → Window Level (brightness): up increases, down decreases
+    // Sensitivity scaled to volume range for intuitive feel
+    const range = volume.maxVal - volume.minVal || 255;
+    const widthSensitivity = range / 300;
+    const levelSensitivity = range / 400;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    const newWidth = Math.max(1, Math.min(range * 2, startWidth + dx * widthSensitivity));
+    const newLevel = Math.max(volume.minVal, Math.min(volume.maxVal, startLevel - dy * levelSensitivity));
+    updateSettings((prev) => ({ ...prev, windowLevel: newLevel, windowWidth: newWidth }));
+  };
+
+  const handleMouseUpRight = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (e.button !== 2) return;
+    rightDragRef.current = null;
+    setWindowingActive(false);
   };
 
   const handleDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -591,6 +634,7 @@ export const OrthogonalSlice: React.FC<OrthogonalSliceProps> = ({
         onMouseUp={handleMouseUp}
         onContextMenu={handleContextMenu}
         onDoubleClick={handleDoubleClick}
+        style={{ cursor: windowingActive ? 'col-resize' : undefined }}
       />
 
       {/* Floating HUD Badge */}
@@ -789,6 +833,7 @@ export const OrthogonalSlice: React.FC<OrthogonalSliceProps> = ({
         </div>
       )}
 
+
       {/* Toast Feedback */}
       {feedbackToast && (
         <div
@@ -799,6 +844,13 @@ export const OrthogonalSlice: React.FC<OrthogonalSliceProps> = ({
           }`}
         >
           {feedbackToast.text}
+        </div>
+      )}
+
+      {/* Right-click hint — shown subtly when not dragging */}
+      {!windowingActive && (
+        <div className="absolute bottom-1.5 right-2 z-10 text-[9px] font-mono text-[#3F3F46] pointer-events-none select-none opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+          right-drag: W/L
         </div>
       )}
     </div>

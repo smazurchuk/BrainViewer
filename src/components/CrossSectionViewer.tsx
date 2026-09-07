@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { VolumeData, WorldCoord, SurfaceMesh, ViewerOverlaySettings, FiduciaryMarker } from '../neuro/types';
 import { worldToVoxel, voxelToWorld } from '../neuro/matrixUtils';
 import { OrthogonalSlice } from './OrthogonalSlice';
@@ -14,7 +14,7 @@ export interface CrossSectionViewerProps {
   activePlaneFocus?: 'all' | 'axial' | 'coronal' | 'sagittal';
   overlaySettings?: ViewerOverlaySettings;
   onOverlaySettingsChange?: (updater: (prev: ViewerOverlaySettings) => ViewerOverlaySettings) => void;
-  onContextMenu?: (e: React.MouseEvent, plane: 'axial' | 'coronal' | 'sagittal', coord: WorldCoord) => void;
+  onReady?: () => void;
 }
 
 export const CrossSectionViewer: React.FC<CrossSectionViewerProps> = ({
@@ -28,30 +28,47 @@ export const CrossSectionViewer: React.FC<CrossSectionViewerProps> = ({
   activePlaneFocus = 'all',
   overlaySettings,
   onOverlaySettingsChange,
-  onContextMenu
+  onReady,
 }) => {
-  // Show loading placeholder when volume data is not yet available
-  if (!volume) {
-    return (
-      <div className="w-full h-full flex items-center justify-center bg-black text-[#71717A] text-xs font-mono">
-        <div className="flex flex-col items-center gap-2">
-          <div className="w-6 h-6 border-2 border-[#38BDF8] border-t-transparent rounded-full animate-spin" />
-          <span>Loading volume data...</span>
-        </div>
-      </div>
-    );
-  }
+  // Track first render to fire onReady callback exactly once
+  const readyFiredRef = useRef(false);
+
+  // All hooks MUST be above any early returns to satisfy React Rules of Hooks
   const [localSettings, setLocalSettings] = useState<ViewerOverlaySettings>({
     showCrosshairs: true,
     showSurfaceContours: showSurfaceContours,
     showOrientationLabels: true,
     colormap: 'grayscale',
-    windowWidth: volume.maxVal - volume.minVal || 100,
-    windowLevel: (volume.maxVal + volume.minVal) / 2 || 50,
+    windowWidth: 100,
+    windowLevel: 50,
     fitMode: 'fit',
-    zoomLevel: 1.0,
-    displayConvention: 'radiological'
+    zoomLevel: 1.0
   });
+
+  // Sync windowing defaults when volume first arrives
+  const volumeInitRef = useRef(false);
+  useEffect(() => {
+    if (volume && !volumeInitRef.current) {
+      volumeInitRef.current = true;
+      setLocalSettings(prev => ({
+        ...prev,
+        windowWidth: volume.maxVal - volume.minVal || 100,
+        windowLevel: (volume.maxVal + volume.minVal) / 2 || 50
+      }));
+    }
+  }, [volume]);
+
+  useEffect(() => {
+    if (volume && !readyFiredRef.current) {
+      readyFiredRef.current = true;
+      // Wait one frame for the canvas to actually paint
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          onReady?.();
+        });
+      });
+    }
+  }, [volume, onReady]);
 
   const settings = overlaySettings || localSettings;
   const updateSettings = onOverlaySettingsChange || setLocalSettings;
@@ -63,8 +80,19 @@ export const CrossSectionViewer: React.FC<CrossSectionViewerProps> = ({
     colormap,
     windowWidth,
     windowLevel,
-    displayConvention = 'radiological'
   } = settings;
+
+  // Show loading placeholder when volume data is not yet available
+  if (!volume) {
+    return (
+      <div className="w-full h-full flex items-center justify-center bg-black text-[#71717A] text-xs font-mono">
+        <div className="flex flex-col items-center gap-2">
+          <div className="w-6 h-6 border-2 border-[#38BDF8] border-t-transparent rounded-full animate-spin" />
+          <span>Loading volume data...</span>
+        </div>
+      </div>
+    );
+  }
 
   // Convert current MNI world coordinate to volume voxel indices
   const currentVoxel = worldToVoxel(crosshair, volume.invAffine);
@@ -94,27 +122,25 @@ export const CrossSectionViewer: React.FC<CrossSectionViewerProps> = ({
     colormap,
     windowWidth,
     windowLevel,
-    displayConvention,
     updateSettings,
-    onContextMenu,
     showStandaloneSettings: true
   };
 
   // If single plane focus requested (e.g. within Bento layout cells)
   if (activePlaneFocus !== 'all') {
     let title = 'Axial';
-    let subLabel = `Z: ${axialWorldZ >= 0 ? '+' : ''}${axialWorldZ.toFixed(1)} mm`;
+    let subLabel = `Z: ${axialWorldZ >= 0 ? '+' : ''}${axialWorldZ.toFixed(0)} mm`;
     let currentSliceIdx = curK;
     let maxSliceIdx = nz - 1;
 
     if (activePlaneFocus === 'sagittal') {
       title = 'Sagittal';
-      subLabel = `X: ${sagittalWorldX >= 0 ? '+' : ''}${sagittalWorldX.toFixed(1)} mm`;
+      subLabel = `X: ${sagittalWorldX >= 0 ? '+' : ''}${sagittalWorldX.toFixed(0)} mm`;
       currentSliceIdx = curI;
       maxSliceIdx = nx - 1;
     } else if (activePlaneFocus === 'coronal') {
       title = 'Coronal';
-      subLabel = `Y: ${coronalWorldY >= 0 ? '+' : ''}${coronalWorldY.toFixed(1)} mm`;
+      subLabel = `Y: ${coronalWorldY >= 0 ? '+' : ''}${coronalWorldY.toFixed(0)} mm`;
       currentSliceIdx = curJ;
       maxSliceIdx = ny - 1;
     }
@@ -153,7 +179,7 @@ export const CrossSectionViewer: React.FC<CrossSectionViewerProps> = ({
           {...commonSliceProps}
           plane="sagittal"
           title="Sagittal"
-          subLabel={`X: ${sagittalWorldX >= 0 ? '+' : ''}${sagittalWorldX.toFixed(1)} mm`}
+          subLabel={`X: ${sagittalWorldX >= 0 ? '+' : ''}${sagittalWorldX.toFixed(0)} mm`}
           currentSliceIdx={curI}
           maxSliceIdx={nx - 1}
           onSliceIndexChange={(newI) => {
@@ -169,7 +195,7 @@ export const CrossSectionViewer: React.FC<CrossSectionViewerProps> = ({
           {...commonSliceProps}
           plane="coronal"
           title="Coronal"
-          subLabel={`Y: ${coronalWorldY >= 0 ? '+' : ''}${coronalWorldY.toFixed(1)} mm`}
+          subLabel={`Y: ${coronalWorldY >= 0 ? '+' : ''}${coronalWorldY.toFixed(0)} mm`}
           currentSliceIdx={curJ}
           maxSliceIdx={ny - 1}
           onSliceIndexChange={(newJ) => {
@@ -185,7 +211,7 @@ export const CrossSectionViewer: React.FC<CrossSectionViewerProps> = ({
           {...commonSliceProps}
           plane="axial"
           title="Axial"
-          subLabel={`Z: ${axialWorldZ >= 0 ? '+' : ''}${axialWorldZ.toFixed(1)} mm`}
+          subLabel={`Z: ${axialWorldZ >= 0 ? '+' : ''}${axialWorldZ.toFixed(0)} mm`}
           currentSliceIdx={curK}
           maxSliceIdx={nz - 1}
           onSliceIndexChange={(newK) => {

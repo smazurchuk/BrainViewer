@@ -108,7 +108,7 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
               </li>
               <li className="flex items-center gap-1.5">
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                <span>RSN-networks.32k_fs_LR.dlabel.nii</span>
+                <span>Yeo7_RSN.32k_fs_LR.dlabel.nii</span>
               </li>
             </ul>
           </div>

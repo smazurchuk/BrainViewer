@@ -22,9 +22,8 @@ import {
   LoadedHcpBundle
 } from './neuro/datasetLoader';
 import { Toolbar } from './components/Toolbar';
-import { ThreeBrainViewer } from './components/ThreeBrainViewer';
+import { ThreeBrainViewer, FocusTarget } from './components/ThreeBrainViewer';
 import { CrossSectionViewer } from './components/CrossSectionViewer';
-import { OverlayContextMenu, ContextMenuTarget } from './components/OverlayContextMenu';
 import { RegionInspector } from './components/RegionInspector';
 import { FileLoaderModal } from './components/FileLoaderModal';
 import { HelpModal } from './components/HelpModal';
@@ -75,12 +74,45 @@ export default function App() {
   const [isDatasetLoading, setIsDatasetLoading] = useState(false);
   const [datasetProgress, setDatasetProgress] = useState<UploadedDatasetProgress | null>(null);
 
+  // Rendering phase: loading overlay stays visible until viewers render their first frame
+  const [isRenderingPhase, setIsRenderingPhase] = useState(false);
+  const [viewersReady, setViewersReady] = useState({ surface3d: false, slices: false });
+
+  const handleViewerReady = useCallback((viewer: 'surface3d' | 'slices') => {
+    setViewersReady(prev => ({ ...prev, [viewer]: true }));
+  }, []);
+
+  // Dismiss rendering overlay once all viewers have rendered
+  useEffect(() => {
+    if (isRenderingPhase && viewersReady.surface3d && viewersReady.slices) {
+      setIsRenderingPhase(false);
+      setDatasetProgress(null);
+    }
+  }, [isRenderingPhase, viewersReady]);
+
+  // Safety timeout: dismiss rendering overlay after 2s even if viewers haven't signaled
+  useEffect(() => {
+    if (!isRenderingPhase) return;
+    const timeout = setTimeout(() => {
+      setIsRenderingPhase(false);
+      setDatasetProgress(null);
+    }, 2000);
+    return () => clearTimeout(timeout);
+  }, [isRenderingPhase]);
+
+  // Combined flag: show loading overlay during either data-fetch or rendering phase
+  const showLoadingOverlay = isDatasetLoading || isRenderingPhase;
+
   // 2. Crosshair & Bi-Directional Synchronization State
   // Initialized at origin — will be updated once real data loads
   const [crosshair, setCrosshair] = useState<CrosshairState>({
     mni: { x: 0, y: 0, z: 0 },
     sourceView: 'manual'
   });
+
+  // 3D Surface View Focus Target — triggers camera animation when a landmark or surface point is selected
+  const focusSeqRef = React.useRef(0);
+  const [surfaceFocusTarget, setSurfaceFocusTarget] = useState<FocusTarget | null>(null);
 
   // Synchronized Overlay Options State across all cross-section views
   const [overlaySettings, setOverlaySettings] = useState<ViewerOverlaySettings>({
@@ -91,12 +123,8 @@ export default function App() {
     windowWidth: 100,
     windowLevel: 50,
     fitMode: 'fit',
-    zoomLevel: 1.0,
-    displayConvention: 'radiological'
+    zoomLevel: 1.0
   });
-
-  // Right-Click Context Menu State
-  const [contextMenuTarget, setContextMenuTarget] = useState<ContextMenuTarget | null>(null);
 
   const [snapToSurface, setSnapToSurface] = useState<boolean>(true);
   const [layout, setLayout] = useState<ViewLayout>('quad');
@@ -124,19 +152,6 @@ export default function App() {
 
   // Flag indicating whether initial data has been loaded
   const isDataReady = !!(leftSurface && rightSurface && volume);
-
-  // Right-click context menu trigger for cross-section views
-  const handleSliceContextMenu = useCallback(
-    (e: React.MouseEvent, plane: 'axial' | 'coronal' | 'sagittal', coord: WorldCoord) => {
-      setContextMenuTarget({
-        x: e.clientX,
-        y: e.clientY,
-        plane,
-        coord
-      });
-    },
-    []
-  );
 
   // Recalculate crosshair vertex info when surfaces or active parcellation change
   const refreshCrosshairForSurfaces = useCallback(
@@ -234,13 +249,15 @@ export default function App() {
         });
         if (!isMountedRef.current) return;
         applyLoadedHcpBundle(data);
+        // Transition to rendering phase — keep overlay until viewers are ready
+        setIsDatasetLoading(false);
+        setViewersReady({ surface3d: false, slices: false });
+        setIsRenderingPhase(true);
+        setDatasetProgress({ step: 'Initializing viewers...', percent: 95 });
       } catch (err) {
         console.error('Auto-load of HCP datasets failed:', err);
-      } finally {
-        if (isMountedRef.current) {
-          setIsDatasetLoading(false);
-          setDatasetProgress(null);
-        }
+        setIsDatasetLoading(false);
+        setDatasetProgress(null);
       }
     };
 
@@ -390,8 +407,20 @@ export default function App() {
           sourceView: 'manual'
         }));
       }
+      // Always animate 3D view to the target coordinate
+      focusSeqRef.current++;
+      setSurfaceFocusTarget({ coord, seq: focusSeqRef.current });
     },
     [activeSurfaces, currentParcellation]
+  );
+
+  // Cross-section contour double-click: place fiducial marker and focus 3D view
+  const handleContourDoubleClicked = useCallback(
+    (hitCoord: WorldCoord, _surf: SurfaceMesh, _hemi: 'left' | 'right') => {
+      focusSeqRef.current++;
+      setSurfaceFocusTarget({ coord: hitCoord, seq: focusSeqRef.current });
+    },
+    []
   );
 
   // Custom File Loaded Handlers
@@ -442,16 +471,7 @@ export default function App() {
         onColorModeChange={setActiveColorMode}
         snapToSurface={snapToSurface}
         onToggleSnapToSurface={() => setSnapToSurface(!snapToSurface)}
-        displayConvention={overlaySettings.displayConvention ?? 'radiological'}
-        onToggleDisplayConvention={() =>
-          setOverlaySettings((prev) => ({
-            ...prev,
-            displayConvention:
-              (prev.displayConvention ?? 'radiological') === 'radiological'
-                ? 'neurological'
-                : 'radiological'
-          }))
-        }
+
         onOpenFileManager={() => setFileModalOpen(true)}
         onOpenHelp={() => setHelpModalOpen(true)}
         hasCustomFiles={isCustomLeftSurf || isCustomRightSurf || isCustomVolume || isCustomParc}
@@ -459,8 +479,8 @@ export default function App() {
         isLoadingUploaded={isDatasetLoading}
       />
 
-      {/* Loading Overlay */}
-      {isDatasetLoading && (
+      {/* Loading Overlay — visible during data fetch AND rendering initialization */}
+      {showLoadingOverlay && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#09090B]/95 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-4 max-w-md px-6">
             <div className="w-10 h-10 border-2 border-[#38BDF8] border-t-transparent rounded-full animate-spin" />
@@ -493,10 +513,11 @@ export default function App() {
                     crosshair={crosshair.mni}
                     surfaces={activeSurfaces}
                     onSliceClicked={handleSliceClicked}
+                    onSurfaceContourDoubleClicked={handleContourDoubleClicked}
                     activePlaneFocus="sagittal"
                     overlaySettings={overlaySettings}
                     onOverlaySettingsChange={setOverlaySettings}
-                    onContextMenu={handleSliceContextMenu}
+                    onReady={() => handleViewerReady('slices')}
                   />
                 </ErrorBoundary>
               </div>
@@ -509,10 +530,10 @@ export default function App() {
                     crosshair={crosshair.mni}
                     surfaces={activeSurfaces}
                     onSliceClicked={handleSliceClicked}
+                    onSurfaceContourDoubleClicked={handleContourDoubleClicked}
                     activePlaneFocus="coronal"
                     overlaySettings={overlaySettings}
                     onOverlaySettingsChange={setOverlaySettings}
-                    onContextMenu={handleSliceContextMenu}
                   />
                 </ErrorBoundary>
               </div>
@@ -525,10 +546,10 @@ export default function App() {
                     crosshair={crosshair.mni}
                     surfaces={activeSurfaces}
                     onSliceClicked={handleSliceClicked}
+                    onSurfaceContourDoubleClicked={handleContourDoubleClicked}
                     activePlaneFocus="axial"
                     overlaySettings={overlaySettings}
                     onOverlaySettingsChange={setOverlaySettings}
-                    onContextMenu={handleSliceContextMenu}
                   />
                 </ErrorBoundary>
               </div>
@@ -544,6 +565,8 @@ export default function App() {
                     crosshair={crosshair}
                     onSurfacePointClicked={handleSurfacePointClicked}
                     showMarkerOnSurface={true}
+                    focusTarget={surfaceFocusTarget}
+                    onReady={() => handleViewerReady('surface3d')}
                   />
                 </ErrorBoundary>
               </div>
@@ -562,6 +585,8 @@ export default function App() {
                     crosshair={crosshair}
                     onSurfacePointClicked={handleSurfacePointClicked}
                     showMarkerOnSurface={true}
+                    focusTarget={surfaceFocusTarget}
+                    onReady={() => handleViewerReady('surface3d')}
                   />
                 </ErrorBoundary>
               </div>
@@ -577,10 +602,11 @@ export default function App() {
                     crosshair={crosshair.mni}
                     surfaces={activeSurfaces}
                     onSliceClicked={handleSliceClicked}
+                    onSurfaceContourDoubleClicked={handleContourDoubleClicked}
                     activePlaneFocus="all"
                     overlaySettings={overlaySettings}
                     onOverlaySettingsChange={setOverlaySettings}
-                    onContextMenu={handleSliceContextMenu}
+                    onReady={() => handleViewerReady('slices')}
                   />
                 </ErrorBoundary>
               </div>
@@ -607,7 +633,7 @@ export default function App() {
           </div>
           <div className="h-3 w-[1px] bg-[#27272A] shrink-0" />
           <span className="shrink-0">
-            MNI: <span className="text-white font-mono font-medium">{crosshair.mni.x.toFixed(1)}, {crosshair.mni.y.toFixed(1)}, {crosshair.mni.z.toFixed(1)}</span>
+            MNI: <span className="text-white font-mono font-medium">{crosshair.mni.x.toFixed(0)}, {crosshair.mni.y.toFixed(0)}, {crosshair.mni.z.toFixed(0)}</span>
           </span>
           {crosshair.activeLabel && (
             <span className="hidden md:inline truncate">
@@ -616,23 +642,9 @@ export default function App() {
           )}
         </div>
         <div className="text-[10px] text-[#71717A] font-mono uppercase tracking-tight shrink-0 hidden lg:block">
-          ATLAS: <span className="text-[#A1A1AA]">{currentParcellation?.name || (isDataReady ? 'None' : 'Loading...')}</span>
+          SURFACE ATLAS: <span className="text-[#A1A1AA]">{currentParcellation?.name || (isDataReady ? 'None' : 'Loading...')}</span>
         </div>
       </footer>
-
-      {/* Right-Click Overlay Options Context Menu */}
-      {contextMenuTarget && (
-        <OverlayContextMenu
-          target={contextMenuTarget}
-          overlaySettings={overlaySettings}
-          onUpdateSettings={setOverlaySettings}
-          onCenterCrosshair={handleJumpToCoord}
-          onResetZoomPan={() => {
-            setOverlaySettings((prev) => ({ ...prev, fitMode: 'fit', zoomLevel: 1.0 }));
-          }}
-          onClose={() => setContextMenuTarget(null)}
-        />
-      )}
 
       {/* File Manager Modal */}
       <FileLoaderModal

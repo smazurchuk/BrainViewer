@@ -434,12 +434,12 @@ export function createYeoNetworksParcellation(leftSurf: SurfaceMesh, rightSurf: 
 
   return {
     id: 'yeo_rsn_networks',
-    name: 'RSN-networks.32k_fs_LR.dlabel.nii',
+    name: 'Yeo7_RSN.32k_fs_LR.dlabel.nii',
     description: 'Yeo 7 Resting-State Functional Connectivity Networks',
     labels,
     vertexLabelsL: assignLabels(leftSurf),
     vertexLabelsR: assignLabels(rightSurf),
-    sourceFileName: 'RSN-networks.32k_fs_LR.dlabel.nii'
+    sourceFileName: 'Yeo7_RSN.32k_fs_LR.dlabel.nii'
   };
 }
 

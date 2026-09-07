@@ -1,6 +1,47 @@
 import * as nifti from 'nifti-reader-js';
 import { VolumeData } from './types';
 import { invertMatrix4 } from './matrixUtils';
+import NiftiWorker from './niftiWorker?worker';
+
+/**
+ * Parse a NIfTI volume asynchronously using a Web Worker (off main thread).
+ * Falls back to synchronous parsing if Worker creation fails.
+ */
+export function parseNiftiVolumeAsync(buffer: ArrayBuffer, fileName = 'volume.nii'): Promise<VolumeData> {
+  return new Promise((resolve, reject) => {
+    try {
+      const worker = new NiftiWorker();
+      worker.onmessage = (e: MessageEvent) => {
+        worker.terminate();
+        if (e.data.success) {
+          resolve(e.data.result as VolumeData);
+        } else {
+          reject(new Error(e.data.error || 'NIfTI worker failed'));
+        }
+      };
+      worker.onerror = (err) => {
+        worker.terminate();
+        // Fallback to synchronous parsing
+        console.warn('[niftiParser] Worker error, falling back to main thread:', err);
+        try {
+          resolve(parseNiftiVolume(buffer, fileName));
+        } catch (e) {
+          reject(e);
+        }
+      };
+      // Transfer the buffer to the worker (zero-copy)
+      worker.postMessage({ buffer, fileName }, [buffer]);
+    } catch {
+      // Worker creation failed (e.g. CSP restriction) — fall back to sync
+      console.warn('[niftiParser] Worker creation failed, falling back to main thread');
+      try {
+        resolve(parseNiftiVolume(buffer, fileName));
+      } catch (e) {
+        reject(e as Error);
+      }
+    }
+  });
+}
 
 export function parseNiftiVolume(buffer: ArrayBuffer, fileName = 'volume.nii'): VolumeData {
   let arrayBuffer = buffer;

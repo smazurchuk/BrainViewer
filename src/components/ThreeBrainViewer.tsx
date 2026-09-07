@@ -13,6 +13,26 @@ import {
   Sparkles
 } from 'lucide-react';
 
+/** Focus target with a sequence counter to ensure repeated coordinates re-trigger animation */
+export interface FocusTarget {
+  coord: WorldCoord;
+  seq: number;
+}
+
+interface CameraAnimation {
+  fromPos: THREE.Vector3;
+  toPos: THREE.Vector3;
+  fromTarget: THREE.Vector3;
+  toTarget: THREE.Vector3;
+  frame: number;
+  totalFrames: number;
+}
+
+/** EaseInOutCubic for smooth, professional camera transitions */
+function easeInOutCubic(t: number): number {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
 interface ThreeBrainViewerProps {
   leftSurface: SurfaceMesh | null;
   rightSurface: SurfaceMesh | null;
@@ -23,6 +43,8 @@ interface ThreeBrainViewerProps {
   onSurfacePointClicked?: (coord: WorldCoord, vertexIndex: number, hemi: 'left' | 'right') => void;
   onSurfacePointDoubleClicked?: (coord: WorldCoord, vertexIndex: number, hemi: 'left' | 'right') => void;
   showMarkerOnSurface?: boolean;
+  focusTarget?: FocusTarget | null;
+  onReady?: () => void;
 }
 
 export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
@@ -34,7 +56,9 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
   fiduciaryMarker,
   onSurfacePointClicked,
   onSurfacePointDoubleClicked,
-  showMarkerOnSurface = true
+  showMarkerOnSurface = true,
+  focusTarget,
+  onReady
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -52,10 +76,13 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
   const connectorLineRef = useRef<THREE.Line | null>(null);
 
   const [hemiVisibility, setHemiVisibility] = useState<'both' | 'left' | 'right'>('both');
-  const [opacity, setOpacity] = useState<number>(0.95);
   const [wireframe, setWireframe] = useState<boolean>(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [hoveredInfo, setHoveredInfo] = useState<string | null>(null);
+
+  // Camera animation state for smooth focus transitions
+  const cameraAnimRef = useRef<CameraAnimation | null>(null);
+  const lastFocusSeqRef = useRef<number>(-1);
 
   // Pointer tracking for click vs orbit
   const pointerDownPosRef = useRef<{ x: number; y: number; time: number }>({ x: 0, y: 0, time: 0 });
@@ -97,9 +124,12 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
             colors[i * 3 + 2] = 0.65;
           }
         } else if (activeColorMode === 'curvature' && surf.curvatures) {
-          // Dark sulci, bright gyri (classic Freesurfer / Workbench look)
-          const curv = surf.curvatures[i]; // -1 to 1
-          const val = curv < 0 ? 0.35 + (curv + 1) * 0.2 : 0.65 + curv * 0.3;
+          // High-contrast sulci/gyri (Connectome Workbench style)
+          // Sulci (curv < 0) are darker, gyri (curv >= 0) are brighter
+          const curv = surf.curvatures[i]; // typically -1 to 1
+          const val = curv < 0
+            ? 0.30 + (curv + 1) * 0.12   // sulci: ~0.30 – 0.42
+            : 0.72 + curv * 0.23;          // gyri:  ~0.72 – 0.95
           colors[i * 3 + 0] = val;
           colors[i * 3 + 1] = val;
           colors[i * 3 + 2] = val;
@@ -129,7 +159,7 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
 
     const camera = new THREE.PerspectiveCamera(40, width / height, 1, 2000);
     camera.up.set(0, 0, 1); // Z is superior in MNI space
-    camera.position.set(-180, -180, 130);
+    camera.position.set(-240, -10, 15); // Left lateral view (wb_view default)
     camera.lookAt(0, -10, 15);
     cameraRef.current = camera;
 
@@ -143,31 +173,39 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     rendererRef.current = renderer;
 
-    // Smooth OrbitControls with momentum damping
+    // Crisp OrbitControls matching wb_view feel: no momentum, direct 1:1 response
     const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.05;
-    controls.rotateSpeed = 0.75;
-    controls.zoomSpeed = 0.85;
-    controls.panSpeed = 0.8;
+    controls.enableDamping = false;      // No inertia — stops instantly on release
+    controls.rotateSpeed = 1.0;          // Direct, responsive rotation
+    controls.zoomSpeed = 1.2;            // Snappy zoom
+    controls.panSpeed = 1.0;             // Crisp panning
     controls.minDistance = 40;
     controls.maxDistance = 800;
     controls.target.set(0, -10, 15);
     controlsRef.current = controls;
 
-    // Ambient light
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
+    // Hemisphere light for natural sky/ground fill (brighter overall)
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444466, 0.9);
+    scene.add(hemiLight);
+
+    // Ambient light – provides baseline illumination
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
     scene.add(ambientLight);
 
-    // Directional light 1 (Front/Superior)
-    const dirLight1 = new THREE.DirectionalLight(0xffffff, 0.85);
+    // Directional light 1 (Front/Superior – key light)
+    const dirLight1 = new THREE.DirectionalLight(0xffffff, 1.1);
     dirLight1.position.set(120, 200, 260);
     scene.add(dirLight1);
 
     // Directional light 2 (Back/Lateral fill)
-    const dirLight2 = new THREE.DirectionalLight(0x94a3b8, 0.5);
+    const dirLight2 = new THREE.DirectionalLight(0xb0bec5, 0.65);
     dirLight2.position.set(-150, -200, -100);
     scene.add(dirLight2);
+
+    // Directional light 3 (Top/Rim – highlights sulcal contours)
+    const dirLight3 = new THREE.DirectionalLight(0xffffff, 0.45);
+    dirLight3.position.set(0, 0, 300);
+    scene.add(dirLight3);
 
     // 3D Marker Group for Crosshair
     const markerGroup = new THREE.Group();
@@ -229,6 +267,21 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
     const animate = () => {
       animId = requestAnimationFrame(animate);
 
+      // Camera focus animation (lerp-based smooth orbit)
+      const anim = cameraAnimRef.current;
+      if (anim && anim.frame < anim.totalFrames) {
+        anim.frame++;
+        const t = easeInOutCubic(anim.frame / anim.totalFrames);
+
+        camera.position.lerpVectors(anim.fromPos, anim.toPos, t);
+        controls.target.lerpVectors(anim.fromTarget, anim.toTarget, t);
+        camera.up.set(0, 0, 1);
+
+        if (anim.frame >= anim.totalFrames) {
+          cameraAnimRef.current = null;
+        }
+      }
+
       // Smooth damping update
       controls.update();
 
@@ -280,11 +333,11 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
 
     const mat = new THREE.MeshStandardMaterial({
       vertexColors: true,
-      roughness: 0.45,
-      metalness: 0.08,
+      roughness: 0.32,
+      metalness: 0.05,
       wireframe,
-      transparent: opacity < 0.99,
-      opacity,
+      transparent: false,
+      opacity: 1.0,
       side: THREE.DoubleSide
     });
 
@@ -296,6 +349,15 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
     leftMeshRef.current = mesh;
 
     updateVertexColors(mesh, leftSurface, 'left');
+
+    // Signal ready after first mesh is built and a frame renders
+    if (onReady) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          onReady();
+        });
+      });
+    }
   }, [leftSurface]);
 
   // Build / Update Right Surface Mesh (only when surface geometry changes)
@@ -316,11 +378,11 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
 
     const mat = new THREE.MeshStandardMaterial({
       vertexColors: true,
-      roughness: 0.45,
-      metalness: 0.08,
+      roughness: 0.32,
+      metalness: 0.05,
       wireframe,
-      transparent: opacity < 0.99,
-      opacity,
+      transparent: false,
+      opacity: 1.0,
       side: THREE.DoubleSide
     });
 
@@ -334,23 +396,19 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
     updateVertexColors(mesh, rightSurface, 'right');
   }, [rightSurface]);
 
-  // Update material styling (wireframe, opacity) in-place without rebuilding geometry
+  // Update material styling (wireframe) in-place without rebuilding geometry
   useEffect(() => {
     if (leftMeshRef.current) {
       const mat = leftMeshRef.current.material as THREE.MeshStandardMaterial;
       mat.wireframe = wireframe;
-      mat.transparent = opacity < 0.99;
-      mat.opacity = opacity;
       mat.needsUpdate = true;
     }
     if (rightMeshRef.current) {
       const mat = rightMeshRef.current.material as THREE.MeshStandardMaterial;
       mat.wireframe = wireframe;
-      mat.transparent = opacity < 0.99;
-      mat.opacity = opacity;
       mat.needsUpdate = true;
     }
-  }, [wireframe, opacity]);
+  }, [wireframe]);
 
   // Update hemisphere visibility in-place without rebuilding geometry
   useEffect(() => {
@@ -371,6 +429,52 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
       updateVertexColors(rightMeshRef.current, rightSurface, 'right');
     }
   }, [parcellation, activeColorMode, leftSurface, rightSurface, updateVertexColors]);
+
+  // Animate camera to focus on a target coordinate when focusTarget changes
+  useEffect(() => {
+    if (!focusTarget || !cameraRef.current || !controlsRef.current) return;
+    if (focusTarget.seq === lastFocusSeqRef.current) return;
+    lastFocusSeqRef.current = focusTarget.seq;
+
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    const { coord } = focusTarget;
+
+    // Brain center in MNI space (matches OrbitControls default target)
+    const brainCenter = new THREE.Vector3(0, -10, 15);
+
+    // Target point on the brain — orbit target will move toward the focus coordinate
+    // We offset slightly toward brain center so the target stays close to center-of-brain
+    // but the camera orbits to view the specific area
+    const focusPt = new THREE.Vector3(coord.x, coord.y, coord.z);
+
+    // Orbit target: blend between brain center and the focus point (70% center, 30% focus)
+    // This keeps the brain centered while still highlighting the area
+    const orbitTarget = new THREE.Vector3().lerpVectors(brainCenter, focusPt, 0.3);
+
+    // Direction from orbit target outward through the focus point — this is the viewing direction
+    const outwardDir = new THREE.Vector3().subVectors(focusPt, brainCenter).normalize();
+
+    // If the direction is effectively zero (e.g., clicking at brain center), use default
+    if (outwardDir.length() < 0.01) {
+      outwardDir.set(-1, -1, 0.5).normalize();
+    }
+
+    // Place camera along this direction at current orbit distance (or default 220)
+    const currentDist = camera.position.distanceTo(controls.target);
+    const dist = Math.max(180, Math.min(currentDist, 300));
+    const cameraTarget = new THREE.Vector3().copy(orbitTarget).addScaledVector(outwardDir, dist);
+
+    // Start smooth animation
+    cameraAnimRef.current = {
+      fromPos: camera.position.clone(),
+      toPos: cameraTarget,
+      fromTarget: controls.target.clone(),
+      toTarget: orbitTarget,
+      frame: 0,
+      totalFrames: 50, // ~830ms at 60fps
+    };
+  }, [focusTarget]);
 
   // Update 3D Fiduciary Marker & Surface Pin when fiduciaryMarker or crosshair updates
   useEffect(() => {
@@ -519,7 +623,7 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
           if (label) areaName = label.name;
         }
       }
-      setHoveredInfo(`Fiducial marker placed: ${areaName} [${worldCoord.x.toFixed(1)}, ${worldCoord.y.toFixed(1)}, ${worldCoord.z.toFixed(1)}]`);
+      setHoveredInfo(`Fiducial marker placed: ${areaName} [${worldCoord.x.toFixed(0)}, ${worldCoord.y.toFixed(0)}, ${worldCoord.z.toFixed(0)}]`);
       setTimeout(() => setHoveredInfo(null), 3500);
     }
   };
@@ -534,7 +638,7 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
     switch (view) {
       case 'lateral_L':
         cameraRef.current.position.set(-dist, -10, 15);
-        setHemiVisibility('left');
+        setHemiVisibility('both');
         break;
       case 'medial_L':
         cameraRef.current.position.set(dist, -10, 15);
@@ -542,7 +646,7 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
         break;
       case 'lateral_R':
         cameraRef.current.position.set(dist, -10, 15);
-        setHemiVisibility('right');
+        setHemiVisibility('both');
         break;
       case 'medial_R':
         cameraRef.current.position.set(-dist, -10, 15);
@@ -656,7 +760,7 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
             id="btn-reset-surface-view"
             type="button"
             title="Reset Camera View"
-            onClick={() => setViewPreset('dorsal')}
+            onClick={() => setViewPreset('lateral_L')}
             className="p-1.5 hover:bg-[#18181B] hover:text-[#FAFAFA] rounded transition-colors"
           >
             <RotateCcw className="w-3.5 h-3.5" />
@@ -765,19 +869,7 @@ export const ThreeBrainViewer: React.FC<ThreeBrainViewerProps> = ({
               className="accent-[#38BDF8] rounded cursor-pointer"
             />
           </label>
-          <div className="h-3 w-px bg-[#27272A]" />
-          <label className="flex items-center gap-1 cursor-pointer">
-            <span className="text-[10px] text-[#71717A] uppercase font-bold tracking-wider">Opacity:</span>
-            <input
-              type="range"
-              min="0.2"
-              max="1.0"
-              step="0.05"
-              value={opacity}
-              onChange={(e) => setOpacity(parseFloat(e.target.value))}
-              className="w-16 accent-[#38BDF8] h-1 bg-[#27272A] rounded cursor-pointer"
-            />
-          </label>
+
         </div>
       </div>
     </div>

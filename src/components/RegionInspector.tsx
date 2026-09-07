@@ -25,49 +25,49 @@ interface Landmark {
 
 const LANDMARKS: Landmark[] = [
   {
-    name: "Hand Knob (M1)",
+    name: "Hand Knob (M1) — L",
     category: 'Motor',
     coord: { x: -38, y: -22, z: 56 },
     description: 'Primary motor cortex hand representation'
   },
   {
-    name: "Broca's Area (BA 44)",
+    name: "Broca's Area (BA 44) — L",
     category: 'Language',
     coord: { x: -50, y: 16, z: 18 },
     description: 'Inferior frontal gyrus pars opercularis'
   },
   {
-    name: "Primary Visual (V1)",
+    name: "Primary Visual (V1) — L",
     category: 'Visual',
     coord: { x: -12, y: -86, z: 4 },
     description: 'Calcarine sulcus primary visual cortex'
   },
   {
-    name: "Primary Auditory (A1)",
+    name: "Primary Auditory (A1) — L",
     category: 'Auditory',
     coord: { x: -48, y: -18, z: 8 },
     description: "Heschl's gyrus primary auditory cortex"
   },
   {
-    name: 'Frontal Eye Field (FEF)',
+    name: 'Frontal Eye Field (FEF) — L',
     category: 'Attention',
     coord: { x: -32, y: -4, z: 52 },
     description: 'Saccadic eye movement control center'
   },
   {
-    name: 'Dorsolateral PFC (Area 46)',
+    name: 'Dorsolateral PFC (Area 46) — L',
     category: 'Executive',
     coord: { x: -42, y: 36, z: 24 },
     description: 'Working memory and cognitive control'
   },
   {
-    name: 'Precuneus (DMN Hub)',
+    name: 'Precuneus (DMN Hub) — L',
     category: 'Default Mode',
     coord: { x: -6, y: -56, z: 36 },
     description: 'Posterior hub of Default Mode Network'
   },
   {
-    name: 'Anterior Insula (AVI)',
+    name: 'Anterior Insula (AVI) — L',
     category: 'Salience',
     coord: { x: -34, y: 16, z: 2 },
     description: 'Salience network and interoceptive hub'
@@ -79,15 +79,15 @@ export const RegionInspector: React.FC<RegionInspectorProps> = ({
   parcellation,
   onJumpToCoord
 }) => {
-  const [manualX, setManualX] = useState<string>(crosshair.mni.x.toFixed(1));
-  const [manualY, setManualY] = useState<string>(crosshair.mni.y.toFixed(1));
-  const [manualZ, setManualZ] = useState<string>(crosshair.mni.z.toFixed(1));
+  const [manualX, setManualX] = useState<string>(crosshair.mni.x.toFixed(0));
+  const [manualY, setManualY] = useState<string>(crosshair.mni.y.toFixed(0));
+  const [manualZ, setManualZ] = useState<string>(crosshair.mni.z.toFixed(0));
 
   // Sync inputs with external coordinate changes
   React.useEffect(() => {
-    setManualX(crosshair.mni.x.toFixed(1));
-    setManualY(crosshair.mni.y.toFixed(1));
-    setManualZ(crosshair.mni.z.toFixed(1));
+    setManualX(crosshair.mni.x.toFixed(0));
+    setManualY(crosshair.mni.y.toFixed(0));
+    setManualZ(crosshair.mni.z.toFixed(0));
   }, [crosshair.mni.x, crosshair.mni.y, crosshair.mni.z]);
 
   const handleManualSubmit = (e: React.FormEvent) => {
@@ -241,6 +241,16 @@ export const RegionInspector: React.FC<RegionInspectorProps> = ({
               </div>
             </button>
           ))}
+        </div>
+      </div>
+
+      {/* Interaction Hint */}
+      <div className="mt-auto px-3 py-3 border-t border-[#27272A]">
+        <div className="flex items-start gap-2 p-2.5 rounded-md bg-[#18181B] border border-[#27272A]">
+          <span className="text-sm shrink-0 mt-0.5">💡</span>
+          <span className="text-[11px] text-[#A1A1AA] leading-relaxed">
+            Try <span className="text-[#38BDF8] font-semibold">double-clicking</span> on the 3D surface or a cross-section surface contour!
+          </span>
         </div>
       </div>
     </div>
